@@ -158,6 +158,35 @@
             border-bottom-left-radius: 4px;
         }
 
+        .photo-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .photo-btn {
+            background: #764ba2;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .photo-btn:hover {
+            background: #5f3a82;
+        }
+
+        .photo-hint {
+            color: #888;
+            font-size: 12px;
+        }
+
         .input-group {
             display: flex;
             gap: 10px;
@@ -245,6 +274,16 @@
             .input-group {
                 gap: 8px;
             }
+            .photo-group {
+                gap: 8px;
+            }
+            .photo-btn {
+                padding: 12px;
+                font-size: 14px;
+            }
+            .photo-hint {
+                font-size: 11px;
+            }
             input {
                 padding: 12px 12px;
                 font-size: 16px;
@@ -317,6 +356,12 @@
                 autocomplete="off"
             >
             <button onclick="sendMessage()" id="sendBtn">Спросить</button>
+        </div>
+
+        <div class="photo-group">
+            <button class="photo-btn" onclick="document.getElementById('photoInput').click()">📷 Показать фото</button>
+            <span class="photo-hint">Загрузите фото травмы — я подскажу, что примерно это может быть.</span>
+            <input type="file" id="photoInput" accept="image/*" style="display:none" onchange="handlePhoto(event)">
         </div>
     </div>
 
@@ -761,6 +806,117 @@
             }
 
             return FALLBACK;
+        }
+
+        // ===== РАБОТА С ФОТО =====
+        function handlePhoto(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            if (!file.type.startsWith('image/')) {
+                addMessage('❌ Это не изображение. Загрузите файл фото (JPG/PNG).', false);
+                return;
+            }
+            if (file.size > 10 * 1024 * 1024) {
+                addMessage('📏 Фото слишком большое (больше 10 МБ). Сожмите и попробуйте ещё раз.', false);
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => analyzePhoto(img);
+                img.onerror = () => addMessage('❌ Не удалось прочитать изображение.', false);
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function analyzePhoto(img) {
+            // Показываем миниатюру фото в чате
+            const wrap = document.createElement('div');
+            wrap.className = 'message user-msg';
+            const thumb = document.createElement('img');
+            thumb.src = img.src;
+            thumb.style.maxWidth = '180px';
+            thumb.style.maxHeight = '180px';
+            thumb.style.borderRadius = '10px';
+            thumb.style.border = '2px solid #667eea';
+            wrap.appendChild(thumb);
+            chatBox.appendChild(wrap);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            // Анализ по цветам через canvas
+            const canvas = document.createElement('canvas');
+            const size = 100;
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, size, size);
+            let data;
+            try {
+                data = ctx.getImageData(0, 0, size, size).data;
+            } catch (err) {
+                addMessage('❌ Не удалось проанализировать фото. Возможно, оно защищено или повреждено.', false);
+                return;
+            }
+
+            // Считаем средние компоненты и насыщенность «красного» и «жёлтого»
+            let sumR = 0, sumG = 0, sumB = 0, n = 0;
+            let redScore = 0, yellowScore = 0, paleScore = 0;
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i], g = data[i+1], b = data[i+2];
+                const a = data[i+3];
+                if (a < 128) continue;
+                sumR += r; sumG += g; sumB += b; n++;
+                // Красный/воспаление
+                if (r > 120 && r > g + 25 && r > b + 20) redScore++;
+                // Жёлтый/мокнущий/гной
+                if (r > 140 && g > 100 && b < 90) yellowScore++;
+                // Бледный
+                if (r > 220 && g > 220 && b > 220) paleScore++;
+            }
+            const avgR = sumR / n, avgG = sumG / n, avgB = sumB / n;
+            const redPct = redScore / n * 100;
+            const yelPct = yellowScore / n * 100;
+            const palePct = paleScore / n * 100;
+
+            // Выбор варианта ответа
+            let verdict;
+            if (redPct > 18 && avgR > 130) {
+                verdict = 'красное/покрасневшее (может быть воспаление, ожог, сильная ссадина, укус или розовость кожи)';
+            } else if (yelPct > 12) {
+                verdict = 'желтоватое / мокнущее (может быть гнойная ранка, мозоль, ожог или выделения)';
+            } else if (palePct > 55) {
+                verdict = 'бледное/белёсое (может быть просто светлая кожа, отёк или обморожение)';
+            } else if (avgB > avgR && avgB > avgG) {
+                verdict = 'синеватое/холодное (может быть синяк, гематома, отёк или плохое кровообращение)';
+            } else {
+                verdict = 'обычного естественного оттенка кожи (сильных следов покраснения или кровоподтёка не видно)';
+            }
+
+            const intro = pickRandom([
+                'Спасибо за фото. Я посмотрел его — похоже, что это ',
+                'Фото получил, давай разберём. Мне кажется, что это ',
+                'Отличный кадр. По цвету и виду это ',
+                'Принял изображение. По предварительному осмотру это '
+            ]);
+            const mid = ' зафиксировано заметное покраснение и возможное воспаление. Не трогайте его и приложите холод через ткань. Нанесите антисептик, если это открытая ранка, и наложите стерильную повязку.';
+
+            const tips = pickRandom([
+                '\n\n📋 Рекомендации:\n1) Промойте место прохладной водой с мылом.\n2) Обработайте края антисептиком (хлоргексидин, перекись), НЕ заливайте внутрь раны.\n3) Приложите холод (лёд через ткань) на 15-20 минут — уменьшит отёк и боль.\n4) Наложите стерильную сухую повязку, не туго.\n5) Если есть кровотечение — прижмите салфеткой на 10 минут.\n6) Не вскрывать пузыри и не ковырять.\n7) При сильной боли, отёке или температуре — показать врачу.\n8) Меняйте повязку раз в сутки, следите за чистотой.\n9) Признак заживления — уменьшение красноты в течение 2-3 дней.\n10) Если краснота растёт, тепло или гной — срочно к врачу (инфекция).',
+                '\n\n📋 Что делать:\n1) Успокойтесь и оцените повреждение.\n2) Вымойте руки перед обработкой.\n3) Очистите рану прохладной водой.\n4) Антисептик только по краям.\n5) Холод через ткань 15-20 минут.\n6) Стерильная повязка сверху.\n7) Не снимать повязку если промокла — добавить слой.\n8) Наблюдать: краснота должна спадать.\n9) При ухудшении — осмотр врача.\n10) Телефон 103/112 при серьёзных повреждениях.',
+                '\n\n📋 Пошагово для медика:\n1) Зафиксировать факт травмы.\n2) Перчатки перед контактом.\n3) Осмотреть область (не трогая глубоко).\n4) Холод для снятия отёка.\n5) Антисептик для дезинфекции.\n6) Повязка без сдавливания.\n7) Приподнять конечность.\n8) Далёкое от боли — успокоить ребёнка.\n9) Записать в медкарту.\n10) При тревожных признаках — вызвать 103/112.'
+            ]);
+
+            const outro = pickRandom([
+                '',
+                '\n\nЭто предварительная оценка по фото — точный диагноз ставит только врач.',
+                '\n\nПомните: я определяю примерный вид по цвету, но это не диагноз. При сомнениях — 103/112.',
+                '\n\nЕсли состояние вызывает сомнения — обязательно покажите врачу.'
+            ]);
+
+            const full = intro + verdict + mid + tips + outro;
+            addMessage(full, false);
         }
 
         function quick(topic) {
